@@ -40,17 +40,18 @@ def on_publish(client,userdata,result):             #create function for callbac
     print("published!")
 
 
-BROKER = "192.168.178.32" #config.server["mqttbroker"]
-PORT = 1883 #config.server["mqttport"]
+BROKER = config.server["mqttbroker"]
+PORT = config.server["mqttport"]
 
 logging.info("Connecting to broker")
 
 
 client = paho.Client()
-client.username_pw_set("cmb87", "gbay2022!#")
+client.username_pw_set(<user>, <pw>)
 client.on_connect = on_connect
 client.on_publish = on_publish   
 client.on_message = on_message
+
 
 
 
