@@ -1,18 +1,54 @@
-/////////////////////////////////////////////////////////////////
 /*
-  AWS IoT | ESP32CAM working as a publisher on MQTT
-  Video Tutorial: https://youtu.be/7_3qbou_keg
-  Created by Eric N. (ThatProject)
+https://wokwi.com/projects/360194707275211777
+https://github.com/gilmaimon/ArduinoWebsockets/issues/101
+https://stackoverflow.com/questions/64175514/esp32-cam-websocket-wifimulti-reconnect
+https://how2electronics.com/connecting-esp32-to-amazon-aws-iot-core-using-mqtt/
+https://randomnerdtutorials.com/esp32-cam-ov2640-camera-settings/
+
+// Websockets...
+// I finallyfound the answer thanks to this comment. I was using the first certificate, but the second was needed. Sorry, my bad.
+// The right command is:
+// $ openssl s_client -showcerts -connect websocket.org:443
+openssl s_client -showcerts -connect rosmqtt.tda-x.siemens-energy.cloud:443 ==> use the second displayed certificate for wss!
+
+Note: When using MQTT and Websockets together without a sufficient delay the WSS server seems to cause a problem. Either the image is to big or the delay????
+
 */
-/////////////////////////////////////////////////////////////////
-
-#include "secrets.h"
+#include <Arduino.h>
+#include <ArduinoJson.h>
+//#include <WiFi.h>
 #include <WiFiClientSecure.h>
-#include <MQTTClient.h>
-#include "WiFi.h"
+//#include <WiFiMulti.h>
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
 #include "esp_camera.h"
+#include <PubSubClient.h>
+#include <ArduinoWebsockets.h>
 
-// =======================
+#include "config.h"
+
+// Timers
+unsigned long t0;
+unsigned long t1;
+unsigned long t2;
+
+// Motor
+#define A1B 15 // Motor B pins
+#define B1A 13
+#define B1B 2 // Motor B pins
+#define A1A 14
+
+
+// Wifi
+WiFiClientSecure net = WiFiClientSecure();
+PubSubClient client(net);
+
+// Websocket
+using namespace websockets;
+WebsocketsClient webSocket;
+
+
+// CAMERA_MODEL_AI_THINKER
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
 #define XCLK_GPIO_NUM      0
@@ -29,68 +65,277 @@
 #define VSYNC_GPIO_NUM    25
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
-
-#define ESP32CAM_PUBLISH_TOPIC   "esp32/cam_0"
-
-// VGA Resolution JPEG ==> 20kbytes
-const int bufferSize = 1024 * 23; // 23552 bytes
-
-WiFiClientSecure net = WiFiClientSecure();
-// Refresh buffersize
-MQTTClient client = MQTTClient(bufferSize);
-
-// =======================
-struct AMG_ANGLES {
-    float track1;
-    float track2;
-};
+#define BUILTIN_LED  4
 
 
-// =======================
-void connectAWS(){
+
+// ======================================================
+// Steering Commands
+// =====================================================
+
+// void left() {          //function of forward
+
+//   analogWrite(A1A, 0);
+//   analogWrite(A1B, speedA);
+//   analogWrite(B1A, 0);
+//   analogWrite(B1B, speedB);
+
+// }
+
+// void right() {          //function of forward
+
+//     analogWrite(A1A, speedA);
+//     analogWrite(A1B, 0);
+//     analogWrite(B1A, speedB);
+//     analogWrite(B1B, 0);
+
+// }
+
+// void forward() {          //function of forward
+
+// }
+
+// void backward() {         //function of backward
+  
+//   analogWrite(A1A, speedA);
+//   analogWrite(A1B, 0);
+//   analogWrite(B1A, 0);
+//   analogWrite(B1B, speedB);
+// }
+
+// void stop() {              //function of stop
+//   analogWrite(A1A, 0);
+//   analogWrite(A1B, 0);
+//   digitalWrite(A1A, LOW);
+//   digitalWrite(A1B, LOW);
+//   analogWrite(B1A, 0);
+//   analogWrite(B1B, 0);
+//   digitalWrite(B1A, LOW);
+//   digitalWrite(B1B, LOW);
+// }
+
+void moveForwardAndTurn(int leftSpeed, int rightSpeed) {  
+  analogWrite(A1A, 0);  
+  analogWrite(A1B, leftSpeed);  
+  analogWrite(B1A, rightSpeed);  
+  analogWrite(B1B, 0);  
+}  
+
+void moveBackwardAndTurn(int leftSpeed, int rightSpeed) {  
+  analogWrite(A1A, leftSpeed);  
+  analogWrite(A1B, 0);  
+  analogWrite(B1A, 0);  
+  analogWrite(B1B, rightSpeed);  
+}  
+
+void stopMotors() {  
+  analogWrite(A1A, 0);  
+  analogWrite(A1B, 0);  
+  analogWrite(B1A, 0);  
+  analogWrite(B1B, 0);  
+}
+
+void getMotorSpeedsFromJoystick(float joystickX, float joystickY, int &leftSpeed, int &rightSpeed) {  
+  // Constrain the joystick values to the range of -1 to 1  
+  joystickX = constrain(joystickX, -1, 1);  
+  joystickY = constrain(joystickY, -1, 1);  
+  
+  // Calculate the raw motor speeds  
+  float v = (1 - abs(joystickX)) * joystickY + joystickY;  
+  float w = (1 - abs(joystickY)) * joystickX + joystickX;  
+    
+  // Map the motor speeds to the range of -255 to 255  
+  leftSpeed = int(255 * (v + w) / 2);  
+  rightSpeed = int(255 * (v - w) / 2);  
+  
+  // Constrain the motor speeds to the range of -255 to 255  
+  leftSpeed = constrain(leftSpeed, -255, 255);  
+  rightSpeed = constrain(rightSpeed, -255, 255);  
+}  
+
+// ======================================================
+// Setup
+// ======================================================
+void callback(char* topic, byte* payload, unsigned int length) {
+  
+  // ---------------------------------------
+  if (String(topic) == String("controller")) {
+
+    Serial.println("Controller Command!");
+
+    StaticJsonDocument<100> doc;
+    deserializeJson(doc, payload, length);
+
+    float turn =  doc["controller"]["x"]; // TurnRate
+    float speed = doc["controller"]["y"];  // Forward
+    
+    int leftSpeed, rightSpeed;  
+    getMotorSpeedsFromJoystick(turn, speed, leftSpeed, rightSpeed);  
+
+    // Forward
+    if ( speed >= 0.0) {
+
+        moveForwardAndTurn(
+          leftSpeed,
+          rightSpeed
+        );
+
+    // Backward
+    } else {
+  
+        moveBackwardAndTurn(
+          leftSpeed,
+          rightSpeed
+        );
+    }
+  }
+  // ---------------------------------------
+  if (String(topic) == String("light_on")) {
+    digitalWrite(BUILTIN_LED, HIGH); 
+    Serial.println("Lights on");
+  }
+  // ---------------------------------------
+  if (String(topic) == String("light_off")) {
+    digitalWrite(BUILTIN_LED, LOW); 
+    Serial.println("Lights off");
+  }
+
+}
+
+// ======================================================
+// MQTT
+// ======================================================
+void reconnect() {
+  // Loop until we're reconnected
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+
+    // Attempt to connect
+    if (client.connect(THINGNAME)) {
+
+      Serial.println("connected");
+      // Once connected, publish an announcement...
+      //client.publish(String("esp/" + String(id) + "/hello").c_str(), "I'm back");
+      // ... and resubscribe
+      client.publish(String("esp").c_str(), "HelloFormEsp");
+
+      client.subscribe("controller");
+      client.subscribe("light_on");
+      client.subscribe("light_off");
+
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
+
+// ======================================================
+// Websocket
+// ======================================================
+void onMessageCallback(WebsocketsMessage message) {
+    Serial.print("Got Message: ");
+    Serial.println(message.data());
+}
+
+void onEventsCallback(WebsocketsEvent event, String data) {
+    if(event == WebsocketsEvent::ConnectionOpened) {
+        Serial.println("Connnection Opened");
+    } else if(event == WebsocketsEvent::ConnectionClosed) {
+        Serial.println("Connnection Closed");
+    } else if(event == WebsocketsEvent::GotPing) {
+        Serial.println("Got a Ping!");
+    } else if(event == WebsocketsEvent::GotPong) {
+        Serial.println("Got a Pong!");
+    }
+}
+
+
+// ======================================================
+// Send camera frame
+// ======================================================
+void sendFrame(){
+  //capture a frame
+  camera_fb_t * fb = esp_camera_fb_get();
+  if (!fb) {
+      Serial.println("Frame buffer could not be acquired");
+      return;
+  }
+  //replace this with your own function
+  webSocket.sendBinary((const char *)fb->buf, fb->len);
+
+  //return the frame buffer back to be reused
+  esp_camera_fb_return(fb);
+}
+
+
+// ======================================================
+// Setup
+// ======================================================
+void setup() {
+  
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); 
+
+  Serial.begin(115200);
+
+  // ---------------- Wifi ----------------
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  Serial.println("\n\n=====================");
+ 
   Serial.println("Connecting to Wi-Fi");
-  Serial.println("=====================\n\n");
-
-  while (WiFi.status() != WL_CONNECTED){
+ 
+  while (WiFi.status() != WL_CONNECTED)
+  {
     delay(500);
     Serial.print(".");
   }
 
+  
+  Serial.println();
+  Serial.print("ESP32-CAM IP Address: ");
+  Serial.println(WiFi.localIP());
+  Serial.println("Wifi Connection ready :)");
+
+  // ---------------- Websocket ----------------
+
+  Serial.print("Connecting to ");
+  Serial.println(WEBSOCKET_SERVER);
+
+  webSocket.onMessage(onMessageCallback);
+  webSocket.onEvent(onEventsCallback);
+
+  webSocket.setCACert(SSL_CERT);
+  bool connected = webSocket.connect(WEBSOCKET_SERVER);  
+
+  if (connected) {
+    Serial.println("Connected");
+  } else {
+    Serial.println("Connection failed.");
+  }
+
+
+  Serial.println("Websocket ready :)");
+
+  // ---------------- MQTT ----------------
   // Configure WiFiClientSecure to use the AWS IoT device credentials
   net.setCACert(AWS_CERT_CA);
   net.setCertificate(AWS_CERT_CRT);
   net.setPrivateKey(AWS_CERT_PRIVATE);
 
   // Connect to the MQTT broker on the AWS endpoint we defined earlier
-  client.begin(AWS_IOT_ENDPOINT, 8883, net);
-  client.setCleanSession(true);
+  client.setServer(AWS_IOT_ENDPOINT, 8883);
+  client.setCallback(callback);
 
-  Serial.println("\n\n=====================");
-  Serial.println("Connecting to AWS IOT");
-  Serial.println("=====================\n\n");
-
-  while (!client.connect(THINGNAME)) {
-    Serial.print(".");
-    delay(100);
+  if (!client.connected()) {
+    reconnect();
   }
 
-  if(!client.connected()){
-    Serial.println("AWS IoT Timeout!");
-    ESP.restart();
-    return;
-  }
+  Serial.println("MQTT ready :)");
 
-  Serial.println("\n\n=====================");
-  Serial.println("AWS IoT Connected!");
-  Serial.println("=====================\n\n");
-}
-
-// =======================
-void cameraInit(){
+  // ---------------- Camera ----------------
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -112,73 +357,111 @@ void cameraInit(){
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
-  config.frame_size = FRAMESIZE_VGA; // 640x480
-  config.jpeg_quality = 10;
-  config.fb_count = 2;
 
+  // init with high specs to pre-allocate larger buffers
+  // FRAMESIZE_UXGA (1600 x 1200)
+  // FRAMESIZE_QVGA (320 x 240)
+  // FRAMESIZE_CIF (352 x 288)
+  // FRAMESIZE_VGA (640 x 480)
+  // FRAMESIZE_SVGA (800 x 600)
+  // FRAMESIZE_XGA (1024 x 768)
+  // FRAMESIZE_SXGA (1280 x 1024)
+
+  if(psramFound()){
+    Serial.println("PSRAM found!");
+    config.frame_size = FRAMESIZE_QVGA; // FRAMESIZE_SXGA;
+    config.jpeg_quality = 10;  //0-63 lower number means higher quality
+    config.fb_count = 2;
+  } else {
+    Serial.println("Using Default");
+    config.frame_size = FRAMESIZE_QVGA; //FRAMESIZE_SVGA;
+    config.jpeg_quality = 10;  //0-63 lower number means higher quality
+    config.fb_count = 1;
+  }
+  
   // camera init
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
     Serial.printf("Camera init failed with error 0x%x", err);
+    delay(1000);
     ESP.restart();
-    return;
-  }
-}
-// =======================
-void grabImage(){
-  camera_fb_t * fb = esp_camera_fb_get();
-  //                                                dont send if photo is larger then buffersize
-  if(fb != NULL && fb->format == PIXFORMAT_JPEG && fb->len < bufferSize){
-    Serial.print("Image Length: ");
-    Serial.print(fb->len);
-    Serial.print("\t Publish Image: ");
-    bool result = client.publish(ESP32CAM_PUBLISH_TOPIC, (const char*)fb->buf, fb->len);
-    Serial.println(result);
-
-    if(!result){
-      ESP.restart();
-    }
-  }
-  esp_camera_fb_return(fb);
-  delay(1);
-}
-// =======================
-
-
-void callback(char* topic, byte* payload, unsigned int length) {
-  Serial.print("Message arrived [");
-  Serial.print(topic);
-  Serial.print("] ");
-  for (int i = 0; i < length; i++) {
-    Serial.print((char)payload[i]);
-  }
-  Serial.println();
-
-    //Receiving Side
-    AMG_ANGLES tmp; //Re-make the struct
-    memcpy(&tmp, payload, sizeof(tmp));
-
-  // Switch on the LED if an 1 was received as first character
-  if ((char)payload[0] == '1') {
-    digitalWrite(BUILTIN_LED, LOW);   // Turn the LED on (Note that LOW is the voltage level
-    // but actually the LED is on; this is because
-    // it is active low on the ESP-01)
-  } else {
-    digitalWrite(BUILTIN_LED, HIGH);  // Turn the LED off by making the voltage HIGH
   }
 
+  camera_fb_t * fb = NULL;
+  fb = esp_camera_fb_get();
+  if(!fb) {
+    Serial.println("Camera capture failed");
+    delay(1000);
+    ESP.restart();
+  }
+
+  // Configure
+  sensor_t * s = esp_camera_sensor_get();
+  s->set_brightness(s, 0);     // -2 to 2
+  s->set_contrast(s, 0);       // -2 to 2
+  s->set_saturation(s, 0);     // -2 to 2
+  s->set_special_effect(s, 2); // 0 to 6 (0 - No Effect, 1 - Negative, 2 - Grayscale, 3 - Red Tint, 4 - Green Tint, 5 - Blue Tint, 6 - Sepia)
+  s->set_whitebal(s, 1);       // 0 = disable , 1 = enable
+  s->set_awb_gain(s, 1);       // 0 = disable , 1 = enable
+  s->set_wb_mode(s, 1);        // 0 to 4 - if awb_gain enabled (0 - Auto, 1 - Sunny, 2 - Cloudy, 3 - Office, 4 - Home)
+  s->set_exposure_ctrl(s, 1);  // 0 = disable , 1 = enable
+  s->set_aec2(s, 0);           // 0 = disable , 1 = enable
+  s->set_ae_level(s, 0);       // -2 to 2
+  s->set_aec_value(s, 300);    // 0 to 1200
+  s->set_gain_ctrl(s, 1);      // 0 = disable , 1 = enable
+  s->set_agc_gain(s, 0);       // 0 to 30
+  s->set_gainceiling(s, (gainceiling_t)0);  // 0 to 6
+  s->set_bpc(s, 0);            // 0 = disable , 1 = enable
+  s->set_wpc(s, 1);            // 0 = disable , 1 = enable
+  s->set_raw_gma(s, 1);        // 0 = disable , 1 = enable
+  s->set_lenc(s, 1);           // 0 = disable , 1 = enable
+  s->set_hmirror(s, 0);        // 0 = disable , 1 = enable
+  s->set_vflip(s, 0);          // 0 = disable , 1 = enable
+  s->set_dcw(s, 1);            // 0 = disable , 1 = enable
+  s->set_colorbar(s, 0);       // 0 = disable , 1 = enable
+
+  Serial.println("Camera setup :)");
+
+  // ---------------- Timers ----------------
+  t0 = millis();
+  t1 = millis();
+  t2 = millis();
+
+  // ---------------- Light ----------------
+  pinMode(BUILTIN_LED, OUTPUT);     // Initialize the BUILTIN_LED pin as an output
+
+  // ---------------- Motors ----------------
+  pinMode(A1A, OUTPUT);
+  pinMode(A1B, OUTPUT);
+  pinMode(B1A, OUTPUT);
+  pinMode(B1B, OUTPUT);
+  digitalWrite(A1A, LOW);
+  digitalWrite(A1B, LOW);
+  digitalWrite(B1A, LOW);
+  digitalWrite(B1B, LOW);
+
+  Serial.println("System ready :)");
 }
 
 
-// =======================
-void setup() {
-  Serial.begin(115200);
-  cameraInit();
-  connectAWS();
-}
-// =======================
+// ======================================================
+// Loop
+// ======================================================
 void loop() {
+
+  if (!client.connected()) {
+    reconnect();
+  }
+
   client.loop();
-  if(client.connected()) grabImage();
+
+  // let the websockets client check for incoming messages
+  if(webSocket.available()) {
+    webSocket.poll();
+    sendFrame();
+    delay(10);
+  }
+
 }
-// =======================
+
+
