@@ -73,47 +73,6 @@ WebsocketsClient webSocket;
 // Steering Commands
 // =====================================================
 
-// void left() {          //function of forward
-
-//   analogWrite(A1A, 0);
-//   analogWrite(A1B, speedA);
-//   analogWrite(B1A, 0);
-//   analogWrite(B1B, speedB);
-
-// }
-
-// void right() {          //function of forward
-
-//     analogWrite(A1A, speedA);
-//     analogWrite(A1B, 0);
-//     analogWrite(B1A, speedB);
-//     analogWrite(B1B, 0);
-
-// }
-
-// void forward() {          //function of forward
-
-// }
-
-// void backward() {         //function of backward
-  
-//   analogWrite(A1A, speedA);
-//   analogWrite(A1B, 0);
-//   analogWrite(B1A, 0);
-//   analogWrite(B1B, speedB);
-// }
-
-// void stop() {              //function of stop
-//   analogWrite(A1A, 0);
-//   analogWrite(A1B, 0);
-//   digitalWrite(A1A, LOW);
-//   digitalWrite(A1B, LOW);
-//   analogWrite(B1A, 0);
-//   analogWrite(B1B, 0);
-//   digitalWrite(B1A, LOW);
-//   digitalWrite(B1B, LOW);
-// }
-
 void moveForwardAndTurn(int leftSpeed, int rightSpeed) {  
   analogWrite(A1A, 0);  
   analogWrite(A1B, leftSpeed);  
@@ -145,12 +104,12 @@ void getMotorSpeedsFromJoystick(float joystickX, float joystickY, int &leftSpeed
   float w = (1 - abs(joystickY)) * joystickX + joystickX;  
     
   // Map the motor speeds to the range of -255 to 255  
-  leftSpeed = int(255 * (v + w) / 2);  
-  rightSpeed = int(255 * (v - w) / 2);  
+  leftSpeed = int(255 * (v - w) / 2);  
+  rightSpeed = int(255 * (v + w) / 2);  
   
   // Constrain the motor speeds to the range of -255 to 255  
-  leftSpeed = constrain(leftSpeed, -255, 255);  
-  rightSpeed = constrain(rightSpeed, -255, 255);  
+  leftSpeed = constrain(leftSpeed, 0, 255);  
+  rightSpeed = constrain(rightSpeed, 0, 255);  
 }  
 
 // ======================================================
@@ -170,23 +129,39 @@ void callback(char* topic, byte* payload, unsigned int length) {
     float speed = doc["controller"]["y"];  // Forward
     
     int leftSpeed, rightSpeed;  
-    getMotorSpeedsFromJoystick(turn, speed, leftSpeed, rightSpeed);  
+    getMotorSpeedsFromJoystick(turn, fabs(speed), leftSpeed, rightSpeed);  
+
+
 
     // Forward
     if ( speed >= 0.0) {
+
+        Serial.print("BWD: ");
+        Serial.print(leftSpeed);
+        Serial.print(", ");
+        Serial.print(rightSpeed);
+        Serial.println();
+
+        moveBackwardAndTurn(
+          leftSpeed,
+          rightSpeed
+        );
+
+
+
+    // Backward
+    } else {
+        Serial.print("FWD: ");
+        Serial.print(leftSpeed);
+        Serial.print(", ");
+        Serial.print(rightSpeed);
+        Serial.println();
 
         moveForwardAndTurn(
           leftSpeed,
           rightSpeed
         );
 
-    // Backward
-    } else {
-  
-        moveBackwardAndTurn(
-          leftSpeed,
-          rightSpeed
-        );
     }
   }
   // ---------------------------------------
