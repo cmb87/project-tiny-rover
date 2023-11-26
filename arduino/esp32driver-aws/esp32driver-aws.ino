@@ -118,7 +118,7 @@ void getMotorSpeedsFromJoystick(float joystickX, float joystickY, int &leftSpeed
 void callback(char* topic, byte* payload, unsigned int length) {
   
   // ---------------------------------------
-  if (String(topic) == String("controller")) {
+  if (String(topic) == String("controller/3")) {
 
     Serial.println("Controller Command!");
 
@@ -165,12 +165,12 @@ void callback(char* topic, byte* payload, unsigned int length) {
     }
   }
   // ---------------------------------------
-  if (String(topic) == String("light_on")) {
+  if (String(topic) == String("light_on/3")) {
     digitalWrite(BUILTIN_LED, HIGH); 
     Serial.println("Lights on");
   }
   // ---------------------------------------
-  if (String(topic) == String("light_off")) {
+  if (String(topic) == String("light_off/3")) {
     digitalWrite(BUILTIN_LED, LOW); 
     Serial.println("Lights off");
   }
@@ -194,9 +194,9 @@ void reconnect() {
       // ... and resubscribe
       client.publish(String("esp").c_str(), "HelloFormEsp");
 
-      client.subscribe("controller");
-      client.subscribe("light_on");
-      client.subscribe("light_off");
+      client.subscribe("controller/3");
+      client.subscribe("light_on/3");
+      client.subscribe("light_off/3");
 
     } else {
       Serial.print("failed, rc=");
